@@ -52,7 +52,7 @@ Contributing
   read the coding and commit guidelines:
   https://github.com/obsproject/obs-studio/blob/master/CONTRIBUTING.rst
 
-- Developer/API documentation can be found here:
+- Developer/API documentation can be found here::
   https://obsproject.com/docs
 
 - If you wish to contribute translations, do not submit pull requests.
