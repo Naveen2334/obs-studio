@@ -1,5 +1,5 @@
 /******************************************************************************
-    Copyright (C) 2016 by Hugh Bailey <obs.jim@gmail.com>
+    Copyright (C) 2023 by Lain Bailey <lain@obsproject.com>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -29,6 +29,7 @@
 #ifdef ENABLE_HEVC
 #include <obs-hevc.h>
 #endif
+#include <opts-parser.h>
 
 #include <unistd.h>
 
@@ -287,6 +288,8 @@ static bool vaapi_update(void *data, obs_data_t *settings, bool hevc)
 
 		hevc_vaapi_video_info(enc, &info);
 	} else
+#else
+	UNUSED_PARAMETER(hevc);
 #endif
 	{
 		h264_vaapi_video_info(enc, &info);
@@ -354,6 +357,14 @@ static bool vaapi_update(void *data, obs_data_t *settings, bool hevc)
 
 	enc->height = enc->context->height;
 
+	const char *ffmpeg_opts = obs_data_get_string(settings, "ffmpeg_opts");
+	struct obs_options opts = obs_parse_options(ffmpeg_opts);
+	for (size_t i = 0; i < opts.count; i++) {
+		struct obs_option *opt = &opts.options[i];
+		av_opt_set(enc->context->priv_data, opt->name, opt->value, 0);
+	}
+	obs_free_options(opts);
+
 	info("settings:\n"
 	     "\tdevice:       %s\n"
 	     "\trate_control: %s\n"
@@ -365,10 +376,11 @@ static bool vaapi_update(void *data, obs_data_t *settings, bool hevc)
 	     "\tkeyint:       %d\n"
 	     "\twidth:        %d\n"
 	     "\theight:       %d\n"
-	     "\tb-frames:     %d\n",
+	     "\tb-frames:     %d\n"
+	     "\tffmpeg opts:  %s\n",
 	     device, rate_control, profile, level, qp, bitrate, maxrate,
 	     enc->context->gop_size, enc->context->width, enc->context->height,
-	     enc->context->max_b_frames);
+	     enc->context->max_b_frames, ffmpeg_opts);
 
 	return vaapi_init_codec(enc, device);
 }
@@ -564,6 +576,8 @@ static bool vaapi_encode_internal(void *data, struct encoder_frame *frame,
 					&enc->header_size, &enc->sei,
 					&enc->sei_size);
 			} else
+#else
+			UNUSED_PARAMETER(hevc);
 #endif
 			{
 				obs_extract_avc_headers(
@@ -649,6 +663,8 @@ static void vaapi_defaults_internal(obs_data_t *settings, bool hevc)
 					 FF_PROFILE_HEVC_MAIN);
 
 	} else
+#else
+	UNUSED_PARAMETER(hevc);
 #endif
 	{
 		obs_data_set_default_int(settings, "profile",
@@ -938,6 +954,10 @@ static obs_properties_t *vaapi_properties_internal(bool hevc)
 				   obs_module_text("KeyframeIntervalSec"), 0,
 				   20, 1);
 	obs_property_int_set_suffix(p, " s");
+
+	obs_properties_add_text(props, "ffmpeg_opts",
+				obs_module_text("FFmpegOpts"),
+				OBS_TEXT_DEFAULT);
 
 	return props;
 }

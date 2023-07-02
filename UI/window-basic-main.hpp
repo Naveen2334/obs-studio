@@ -1,5 +1,5 @@
 /******************************************************************************
-    Copyright (C) 2013-2014 by Hugh Bailey <obs.jim@gmail.com>
+    Copyright (C) 2023 by Lain Bailey <lain@obsproject.com>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -229,6 +229,7 @@ private:
 	std::vector<OBSSignal> signalHandlers;
 
 	QList<QPointer<QDockWidget>> oldExtraDocks;
+	QStringList oldExtraDockNames;
 
 	bool loaded = false;
 	long disableSaving = 1;
@@ -245,6 +246,8 @@ private:
 	OBSWeakSourceAutoRelease copySourceTransition;
 
 	bool closing = false;
+	bool clearingFailed = false;
+
 	QScopedPointer<QThread> devicePropertiesThread;
 	QScopedPointer<QThread> whatsNewInitThread;
 	QScopedPointer<QThread> updateCheckThread;
@@ -554,6 +557,9 @@ private:
 	QStringList extraDockNames;
 	QList<QSharedPointer<QDockWidget>> extraDocks;
 
+	QStringList extraCustomDockNames;
+	QList<QPointer<QDockWidget>> extraCustomDocks;
+
 #ifdef BROWSER_AVAILABLE
 	QPointer<QAction> extraBrowserMenuDocksSeparator;
 
@@ -653,6 +659,8 @@ private:
 	std::string lastReplay;
 
 	void UpdatePreviewOverflowSettings();
+
+	bool restartingVCam = false;
 
 public slots:
 	void DeferSaveBegin();
@@ -825,9 +833,11 @@ private slots:
 	void TBarReleased();
 
 	void LockVolumeControl(bool lock);
-	void ResetProxyStyleSliders();
+	void ThemeChanged();
 
 	void UpdateVirtualCamConfig(const VCamConfig &config);
+	void RestartVirtualCam(const VCamConfig &config);
+	void RestartingVirtualCam();
 
 private:
 	/* OBS Callbacks */
@@ -964,6 +974,8 @@ public:
 	void AddDockWidget(QDockWidget *dock, Qt::DockWidgetArea area,
 			   bool extraBrowser = false);
 	void RemoveDockWidget(const QString &name);
+	bool IsDockObjectNameUsed(const QString &name);
+	void AddCustomDockWidget(QDockWidget *dock);
 
 	static OBSBasic *Get();
 
@@ -1060,6 +1072,8 @@ private slots:
 					  QListWidgetItem *prev);
 	void on_scenes_customContextMenuRequested(const QPoint &pos);
 	void GridActionClicked();
+	void on_actionSceneListMode_triggered();
+	void on_actionSceneGridMode_triggered();
 	void on_actionAddScene_triggered();
 	void on_actionRemoveScene_triggered();
 	void on_actionSceneUp_triggered();
@@ -1150,6 +1164,7 @@ private slots:
 	void on_resetDocks_triggered(bool force = false);
 	void on_lockDocks_toggled(bool lock);
 	void on_multiviewProjectorWindowed_triggered();
+	void on_sideDocks_toggled(bool side);
 
 	void PauseToggled();
 
@@ -1192,6 +1207,9 @@ private slots:
 	void StackedMixerAreaContextMenuRequested();
 
 	void ResizeOutputSizeOfSource();
+
+	void RepairOldExtraDockName();
+	void RepairCustomExtraDockName();
 
 public slots:
 	void on_actionResetTransform_triggered();

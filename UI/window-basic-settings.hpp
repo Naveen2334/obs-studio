@@ -1,5 +1,5 @@
 /******************************************************************************
-    Copyright (C) 2013 by Hugh Bailey <obs.jim@gmail.com>
+    Copyright (C) 2023 by Lain Bailey <lain@obsproject.com>
                           Philippe Groarke <philippe.groarke@gmail.com>
 
     This program is free software: you can redistribute it and/or modify
@@ -258,6 +258,7 @@ private:
 	/* stream */
 	void InitStreamPage();
 	inline bool IsCustomService() const;
+	inline bool IsWHIP() const;
 	void LoadServices(bool showAll);
 	void OnOAuthStreamKeyConnected();
 	void OnAuthConnected();
@@ -375,6 +376,8 @@ private:
 	QIcon GetAdvancedIcon() const;
 
 	int CurrentFLVTrack();
+	int SimpleOutGetSelectedAudioTracks();
+	int AdvOutGetSelectedAudioTracks();
 
 	OBSService GetStream1Service();
 

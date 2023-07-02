@@ -1,5 +1,5 @@
 /******************************************************************************
-    Copyright (C) 2013 by Hugh Bailey <obs.jim@gmail.com>
+    Copyright (C) 2023 by Lain Bailey <lain@obsproject.com>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -1743,7 +1743,7 @@ string OBSApp::GetVersionString(bool platform) const
 	stringstream ver;
 
 #ifdef HAVE_OBSCONFIG_H
-	ver << OBS_VERSION;
+	ver << obs_get_version_string();
 #else
 	ver << LIBOBS_API_MAJOR_VER << "." << LIBOBS_API_MINOR_VER << "."
 	    << LIBOBS_API_PATCH_VER;
@@ -2467,6 +2467,32 @@ static int run_program(fstream &logFile, int argc, char *argv[])
 		if (!created_log)
 			create_log_file(logFile);
 
+		qInstallMessageHandler([](QtMsgType type,
+					  const QMessageLogContext &,
+					  const QString &message) {
+			switch (type) {
+#ifdef _DEBUG
+			case QtDebugMsg:
+				blog(LOG_DEBUG, "%s", QT_TO_UTF8(message));
+				break;
+			case QtInfoMsg:
+				blog(LOG_INFO, "%s", QT_TO_UTF8(message));
+				break;
+#else
+			case QtDebugMsg:
+			case QtInfoMsg:
+				break;
+#endif
+			case QtWarningMsg:
+				blog(LOG_WARNING, "%s", QT_TO_UTF8(message));
+				break;
+			case QtCriticalMsg:
+			case QtFatalMsg:
+				blog(LOG_ERROR, "%s", QT_TO_UTF8(message));
+				break;
+			}
+		});
+
 #ifdef __APPLE__
 		MacPermissionStatus audio_permission =
 			CheckPermission(kAudioDeviceAccess);
@@ -2812,39 +2838,6 @@ static inline bool arg_is(const char *arg, const char *long_form,
 	return (long_form && strcmp(arg, long_form) == 0) ||
 	       (short_form && strcmp(arg, short_form) == 0);
 }
-
-#if !defined(_WIN32) && !defined(__APPLE__)
-#define IS_UNIX 1
-#endif
-
-/* if using XDG and was previously using an older build of OBS, move config
- * files to XDG directory */
-#if defined(USE_XDG) && defined(IS_UNIX)
-static void move_to_xdg(void)
-{
-	char old_path[512];
-	char new_path[512];
-	char *home = getenv("HOME");
-	if (!home)
-		return;
-
-	if (snprintf(old_path, sizeof(old_path), "%s/.obs-studio", home) <= 0)
-		return;
-
-	/* make base xdg path if it doesn't already exist */
-	if (GetConfigPath(new_path, sizeof(new_path), "") <= 0)
-		return;
-	if (os_mkdirs(new_path) == MKDIR_ERROR)
-		return;
-
-	if (GetConfigPath(new_path, sizeof(new_path), "obs-studio") <= 0)
-		return;
-
-	if (os_file_exists(old_path) && !os_file_exists(new_path)) {
-		rename(old_path, new_path);
-	}
-}
-#endif
 
 static bool update_ffmpeg_output(ConfigFile &config)
 {
@@ -3238,7 +3231,8 @@ void OBSApp::ProcessSigInt(void)
 	recv(sigintFd[1], &tmp, sizeof(tmp), 0);
 
 	OBSBasic *main = reinterpret_cast<OBSBasic *>(GetMainWindow());
-	main->close();
+	if (main)
+		main->close();
 #endif
 }
 
@@ -3286,10 +3280,6 @@ int main(int argc, char *argv[])
 #endif
 
 	base_get_log_handler(&def_log_handler, nullptr);
-
-#if defined(USE_XDG) && defined(IS_UNIX)
-	move_to_xdg();
-#endif
 
 	obs_set_cmdline_args(argc, argv);
 

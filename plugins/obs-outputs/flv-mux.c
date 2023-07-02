@@ -1,5 +1,5 @@
 /******************************************************************************
-    Copyright (C) 2014 by Hugh Bailey <obs.jim@gmail.com>
+    Copyright (C) 2023 by Lain Bailey <lain@obsproject.com>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -167,7 +167,7 @@ static void build_flv_meta_data(obs_output_t *context, uint8_t **output,
 	dstr_printf(&encoder_name, "%s (libobs version ", MODULE_NAME);
 
 #ifdef HAVE_OBSCONFIG_H
-	dstr_cat(&encoder_name, OBS_VERSION);
+	dstr_cat(&encoder_name, obs_get_version_string());
 #else
 	dstr_catf(&encoder_name, "%d.%d.%d", LIBOBS_API_MAJOR_VER,
 		  LIBOBS_API_MINOR_VER, LIBOBS_API_PATCH_VER);

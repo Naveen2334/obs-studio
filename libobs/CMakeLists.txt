@@ -2,6 +2,14 @@ cmake_minimum_required(VERSION 3.16...3.25)
 
 legacy_check()
 
+# cmake-format: off
+add_library(libobs-version STATIC EXCLUDE_FROM_ALL)
+add_library(OBS::libobs-version ALIAS libobs-version)
+# cmake-format: on
+configure_file(obsversion.c.in obsversion.c @ONLY)
+target_sources(libobs-version PRIVATE obsversion.c obsversion.h)
+set_property(TARGET libobs-version PROPERTY FOLDER core)
+
 add_library(libobs SHARED)
 add_library(OBS::libobs ALIAS libobs)
 
@@ -214,18 +222,18 @@ target_sources(
           graphics/vec4.c
           graphics/vec4.h)
 
-target_compile_features(libobs PUBLIC $<INSTALL_INTERFACE:cxx_std_17>)
-target_compile_options(libobs PUBLIC ${ARCH_SIMD_FLAGS})
+target_compile_features(libobs PUBLIC cxx_std_17)
 target_compile_definitions(
   libobs
   PRIVATE IS_LIBOBS
-  PUBLIC ${ARCH_SIMD_DEFINES} $<BUILD_INTERFACE:$<$<BOOL:${ENABLE_HEVC}>:ENABLE_HEVC>>
+  PUBLIC $<BUILD_INTERFACE:$<$<BOOL:${ENABLE_HEVC}>:ENABLE_HEVC>>
          $<BUILD_INTERFACE:$<$<BOOL:${ENABLE_FFMPEG_MUX_DEBUG}>:SHOW_SUBPROCESSES>>)
 
 target_link_libraries(
   libobs
   PRIVATE OBS::caption
           OBS::uthash
+          OBS::libobs-version
           FFmpeg::avcodec
           FFmpeg::avformat
           FFmpeg::avutil
@@ -283,6 +291,7 @@ set(public_headers
     obs-source.h
     obs-ui.h
     obs.h
+    obs.hpp
     util/base.h
     util/bmem.h
     util/c99defs.h
@@ -316,15 +325,14 @@ if(ARCH_SIMD_FLAGS)
       util/simde/x86/sse2.h)
 endif()
 
-set_property(
-  TARGET libobs
-  APPEND
-  PROPERTY OBS_PUBLIC_HEADERS ${public_headers})
+# cmake-format: off
+set_property(TARGET libobs APPEND PROPERTY OBS_PUBLIC_HEADERS ${public_headers})
 
 set_target_properties_obs(
   libobs
   PROPERTIES FOLDER core
              VERSION 0
              SOVERSION "${OBS_VERSION_MAJOR}")
+# cmake-format: on
 
 target_export(libobs)

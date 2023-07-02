@@ -1,5 +1,5 @@
 /******************************************************************************
-    Copyright (C) 2016 by Hugh Bailey <obs.jim@gmail.com>
+    Copyright (C) 2023 by Lain Bailey <lain@obsproject.com>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -352,6 +352,14 @@ static void *h264_nvenc_create(obs_data_t *settings, obs_encoder_t *encoder)
 		blog(LOG_ERROR, "[NVENC encoder] %s", text);
 		return NULL;
 	}
+	case VIDEO_FORMAT_P216:
+	case VIDEO_FORMAT_P416: {
+		const char *const text =
+			obs_module_text("NVENC.16bitUnsupported");
+		obs_encoder_set_last_error(encoder, text);
+		blog(LOG_ERROR, "[NVENC encoder] %s", text);
+		return NULL;
+	}
 	default:
 		if (voi->colorspace == VIDEO_CS_2100_PQ ||
 		    voi->colorspace == VIDEO_CS_2100_HLG) {
@@ -391,6 +399,14 @@ static void *hevc_nvenc_create(obs_data_t *settings, obs_encoder_t *encoder)
 	}
 	case VIDEO_FORMAT_P010:
 		break;
+	case VIDEO_FORMAT_P216:
+	case VIDEO_FORMAT_P416: {
+		const char *const text =
+			obs_module_text("NVENC.16bitUnsupported");
+		obs_encoder_set_last_error(encoder, text);
+		blog(LOG_ERROR, "[NVENC encoder] %s", text);
+		return NULL;
+	}
 	default:
 		if (voi->colorspace == VIDEO_CS_2100_PQ ||
 		    voi->colorspace == VIDEO_CS_2100_HLG) {

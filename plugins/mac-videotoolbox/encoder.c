@@ -626,8 +626,9 @@ static bool create_encoder(struct vt_encoder *enc)
 			kVTCompressionPropertyKey_AllowFrameReordering,
 			kVTCompressionPropertyKey_ProfileLevel};
 
-		float key_frame_interval =
-			enc->keyint * ((float)enc->fps_num / enc->fps_den);
+		SInt32 key_frame_interval =
+			(SInt32)(enc->keyint *
+				 ((float)enc->fps_num / enc->fps_den));
 		float expected_framerate = (float)enc->fps_num / enc->fps_den;
 		CFNumberRef MaxKeyFrameInterval =
 			CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type,
@@ -698,14 +699,6 @@ static bool create_encoder(struct vt_encoder *enc)
 	enc->session = s;
 
 	return true;
-
-fail:
-	if (encoder_spec != NULL)
-		CFRelease(encoder_spec);
-	if (pixbuf_spec != NULL)
-		CFRelease(pixbuf_spec);
-
-	return false;
 }
 
 static void vt_destroy(void *data)
@@ -752,8 +745,15 @@ static void dump_encoder_info(struct vt_encoder *enc)
 		codec_type_to_print_fmt(enc->codec_type));
 }
 
-static bool set_video_format(struct vt_encoder *enc, enum video_format format,
-			     enum video_range_type range)
+typedef enum {
+	kResultSuccess = 0,
+	kResultColorFormatUnsupported = 1,
+	kResultFullRangeUnsupported = 2,
+} SetVideoFormatResult;
+
+static SetVideoFormatResult set_video_format(struct vt_encoder *enc,
+					     enum video_format format,
+					     enum video_range_type range)
 {
 	bool full_range = range == VIDEO_RANGE_FULL;
 	switch (format) {
@@ -762,40 +762,44 @@ static bool set_video_format(struct vt_encoder *enc, enum video_format format,
 			full_range
 				? kCVPixelFormatType_420YpCbCr8PlanarFullRange
 				: kCVPixelFormatType_420YpCbCr8Planar;
-		return true;
+		return kResultSuccess;
 	case VIDEO_FORMAT_NV12:
 		enc->vt_pix_fmt =
 			full_range
 				? kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
 				: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
-		return true;
+		return kResultSuccess;
 	case VIDEO_FORMAT_P010:
 		if (enc->codec_type == kCMVideoCodecType_HEVC) {
 			enc->vt_pix_fmt =
 				full_range
 					? kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
 					: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange;
-			return true;
+			return kResultSuccess;
 		}
 		break;
 	case VIDEO_FORMAT_P216:
 		if (!full_range) {
 			enc->vt_pix_fmt =
 				kCVPixelFormatType_422YpCbCr16BiPlanarVideoRange;
-			return true;
+			return kResultSuccess;
+		} else {
+			return kResultFullRangeUnsupported;
 		}
 		break;
 	case VIDEO_FORMAT_P416:
 		if (!full_range) {
 			enc->vt_pix_fmt =
 				kCVPixelFormatType_444YpCbCr16BiPlanarVideoRange;
-			return true;
+			return kResultSuccess;
+		} else {
+			return kResultFullRangeUnsupported;
 		}
 		break;
 	default:
-		return false;
+		return kResultColorFormatUnsupported;
 	}
-	return false;
+	return kResultColorFormatUnsupported;
 }
 
 static bool update_params(struct vt_encoder *enc, obs_data_t *settings)
@@ -817,11 +821,18 @@ static bool update_params(struct vt_encoder *enc, obs_data_t *settings)
 			settings, "codec_type");
 	}
 
-	if (!set_video_format(enc, voi->format, voi->range)) {
+	SetVideoFormatResult res =
+		set_video_format(enc, voi->format, voi->range);
+	if (res == kResultColorFormatUnsupported) {
 		obs_encoder_set_last_error(
 			enc->encoder,
 			obs_module_text("ColorFormatUnsupported"));
 		VT_BLOG(LOG_WARNING, "Unsupported color format selected");
+		return false;
+	} else if (res == kResultFullRangeUnsupported) {
+		obs_encoder_set_last_error(
+			enc->encoder, obs_module_text("FullRangeUnsupported"));
+		VT_BLOG(LOG_WARNING, "Unsupported color range (full) selected");
 		return false;
 	}
 	enc->colorspace = voi->colorspace;
@@ -1042,6 +1053,10 @@ static bool convert_sample_to_annexb(struct vt_encoder *enc,
 			format_desc, 0, NULL, NULL, &param_count,
 			&nal_length_bytes);
 #endif
+	} else {
+		log_osstatus(LOG_ERROR, enc, "invalid codec type",
+			     kCMFormatDescriptionError_ValueNotAvailable);
+		return false;
 	}
 	// it is not clear what errors this function can return
 	// so we check the two most reasonable
@@ -1573,40 +1588,10 @@ vt_add_prores_encoder_data_to_list(CFDictionaryRef encoder_dict,
 	encoder_data->codec_type = codec_type;
 }
 
-static CFComparisonResult compare_encoder_list(const void *left_val,
-					       const void *right_val,
-					       void *context __unused)
-{
-	CFDictionaryRef left = (CFDictionaryRef)left_val;
-	CFDictionaryRef right = (CFDictionaryRef)right_val;
-
-	CFNumberRef left_codec_num =
-		CFDictionaryGetValue(left, kVTVideoEncoderList_CodecType);
-	CFNumberRef right_codec_num =
-		CFDictionaryGetValue(right, kVTVideoEncoderList_CodecType);
-	CFComparisonResult result =
-		CFNumberCompare(left_codec_num, right_codec_num, NULL);
-
-	if (result != kCFCompareEqualTo)
-		return result;
-
-	CFBooleanRef left_hardware_accel = CFDictionaryGetValue(
-		left, kVTVideoEncoderList_IsHardwareAccelerated);
-	CFBooleanRef right_hardware_accel = CFDictionaryGetValue(
-		right, kVTVideoEncoderList_IsHardwareAccelerated);
-
-	if (left_hardware_accel == right_hardware_accel)
-		return kCFCompareEqualTo;
-	else if (left_hardware_accel == kCFBooleanTrue)
-		return kCFCompareGreaterThan;
-	else
-		return kCFCompareLessThan;
-}
-
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE("mac-videotoolbox", "en-US")
 dispatch_group_t encoder_list_dispatch_group;
-CFArrayRef encoder_list_const;
+CFArrayRef encoder_list;
 
 bool obs_module_load(void)
 {
@@ -1614,7 +1599,7 @@ bool obs_module_load(void)
 		dispatch_queue_create("Encoder list load queue", NULL);
 	encoder_list_dispatch_group = dispatch_group_create();
 	dispatch_group_async(encoder_list_dispatch_group, queue, ^{
-		VTCopyVideoEncoderList(NULL, &encoder_list_const);
+		VTCopyVideoEncoderList(NULL, &encoder_list);
 	});
 	// The group dispatch keeps a reference until it's finished
 	dispatch_release(queue);
@@ -1645,14 +1630,7 @@ void obs_module_post_load(void)
 
 	dispatch_group_wait(encoder_list_dispatch_group, DISPATCH_TIME_FOREVER);
 	dispatch_release(encoder_list_dispatch_group);
-	CFIndex size = CFArrayGetCount(encoder_list_const);
-
-	CFMutableArrayRef encoder_list = CFArrayCreateMutableCopy(
-		kCFAllocatorDefault, size, encoder_list_const);
-	CFRelease(encoder_list_const);
-
-	CFArraySortValues(encoder_list, CFRangeMake(0, size),
-			  &compare_encoder_list, NULL);
+	CFIndex size = CFArrayGetCount(encoder_list);
 
 	for (CFIndex i = 0; i < size; i++) {
 		CFDictionaryRef encoder_dict =

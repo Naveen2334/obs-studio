@@ -1,5 +1,5 @@
 /******************************************************************************
-    Copyright (C) 2013 by Hugh Bailey <obs.jim@gmail.com>
+    Copyright (C) 2023 by Lain Bailey <lain@obsproject.com>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -17,6 +17,7 @@
 
 #include <cassert>
 #include <cinttypes>
+#include <optional>
 #include <util/base.h>
 #include <util/platform.h>
 #include <util/dstr.h>
@@ -26,6 +27,7 @@
 #include <d3d9.h>
 #include "d3d11-subsystem.hpp"
 #include <shellscalingapi.h>
+#include <d3dkmthk.h>
 
 struct UnsupportedHWError : HRError {
 	inline UnsupportedHWError(const char *str, HRESULT hr)
@@ -471,40 +473,19 @@ static bool increase_maximum_frame_latency(ID3D11Device *device)
 	return true;
 }
 
-#if USE_GPU_PRIORITY
-static bool set_priority(ID3D11Device *device)
+#ifdef USE_GPU_PRIORITY
+static bool set_priority(ID3D11Device *device, bool hags_enabled)
 {
-	typedef enum _D3DKMT_SCHEDULINGPRIORITYCLASS {
-		D3DKMT_SCHEDULINGPRIORITYCLASS_IDLE,
-		D3DKMT_SCHEDULINGPRIORITYCLASS_BELOW_NORMAL,
-		D3DKMT_SCHEDULINGPRIORITYCLASS_NORMAL,
-		D3DKMT_SCHEDULINGPRIORITYCLASS_ABOVE_NORMAL,
-		D3DKMT_SCHEDULINGPRIORITYCLASS_HIGH,
-		D3DKMT_SCHEDULINGPRIORITYCLASS_REALTIME
-	} D3DKMT_SCHEDULINGPRIORITYCLASS;
-
 	ComQIPtr<IDXGIDevice> dxgiDevice(device);
 	if (!dxgiDevice) {
 		blog(LOG_DEBUG, "%s: Failed to get IDXGIDevice", __FUNCTION__);
 		return false;
 	}
 
-	HMODULE gdi32 = GetModuleHandleW(L"GDI32");
-	if (!gdi32) {
-		blog(LOG_DEBUG, "%s: Failed to get GDI32", __FUNCTION__);
-		return false;
-	}
-
-	NTSTATUS(WINAPI * d3dkmt_spspc)(HANDLE, D3DKMT_SCHEDULINGPRIORITYCLASS);
-	d3dkmt_spspc = (decltype(d3dkmt_spspc))GetProcAddress(
-		gdi32, "D3DKMTSetProcessSchedulingPriorityClass");
-	if (!d3dkmt_spspc) {
-		blog(LOG_DEBUG, "%s: Failed to get d3dkmt_spspc", __FUNCTION__);
-		return false;
-	}
-
-	NTSTATUS status = d3dkmt_spspc(GetCurrentProcess(),
-				       D3DKMT_SCHEDULINGPRIORITYCLASS_REALTIME);
+	NTSTATUS status = D3DKMTSetProcessSchedulingPriorityClass(
+		GetCurrentProcess(),
+		hags_enabled ? D3DKMT_SCHEDULINGPRIORITYCLASS_HIGH
+			     : D3DKMT_SCHEDULINGPRIORITYCLASS_REALTIME);
 	if (status != 0) {
 		blog(LOG_DEBUG, "%s: Failed to set process priority class: %d",
 		     __FUNCTION__, (int)status);
@@ -521,8 +502,131 @@ static bool set_priority(ID3D11Device *device)
 	blog(LOG_INFO, "D3D11 GPU priority setup success");
 	return true;
 }
-
 #endif
+
+struct HagsStatus {
+	enum DriverSupport {
+		ALWAYS_OFF,
+		ALWAYS_ON,
+		EXPERIMENTAL,
+		STABLE,
+		UNKNOWN
+	};
+
+	bool enabled;
+	bool enabled_by_default;
+	DriverSupport support;
+
+	explicit HagsStatus(const D3DKMT_WDDM_2_7_CAPS *caps)
+	{
+		enabled = caps->HwSchEnabled;
+		enabled_by_default = caps->HwSchEnabledByDefault;
+		support = caps->HwSchSupported ? DriverSupport::STABLE
+					       : DriverSupport::ALWAYS_OFF;
+	}
+
+	void SetDriverSupport(const UINT DXGKVal)
+	{
+		switch (DXGKVal) {
+		case DXGK_FEATURE_SUPPORT_ALWAYS_OFF:
+			support = ALWAYS_OFF;
+			break;
+		case DXGK_FEATURE_SUPPORT_ALWAYS_ON:
+			support = ALWAYS_ON;
+			break;
+		case DXGK_FEATURE_SUPPORT_EXPERIMENTAL:
+			support = EXPERIMENTAL;
+			break;
+		case DXGK_FEATURE_SUPPORT_STABLE:
+			support = STABLE;
+			break;
+		default:
+			support = UNKNOWN;
+		}
+	}
+
+	string ToString() const
+	{
+		string status = enabled ? "Enabled" : "Disabled";
+		status += " (Default: ";
+		status += enabled_by_default ? "Yes" : "No";
+		status += ", Driver status: ";
+		status += DriverSupportToString();
+		status += ")";
+
+		return status;
+	}
+
+private:
+	const char *DriverSupportToString() const
+	{
+		switch (support) {
+		case ALWAYS_OFF:
+			return "Unsupported";
+		case ALWAYS_ON:
+			return "Always On";
+		case EXPERIMENTAL:
+			return "Experimental";
+		case STABLE:
+			return "Supported";
+		default:
+			return "Unknown";
+		}
+	}
+};
+
+static optional<HagsStatus> GetAdapterHagsStatus(const DXGI_ADAPTER_DESC *desc)
+{
+	optional<HagsStatus> ret;
+	D3DKMT_OPENADAPTERFROMLUID d3dkmt_openluid{};
+	d3dkmt_openluid.AdapterLuid = desc->AdapterLuid;
+
+	NTSTATUS res = D3DKMTOpenAdapterFromLuid(&d3dkmt_openluid);
+	if (FAILED(res)) {
+		blog(LOG_DEBUG, "Failed opening D3DKMT adapter: %x", res);
+		return ret;
+	}
+
+	D3DKMT_WDDM_2_7_CAPS caps = {};
+	D3DKMT_QUERYADAPTERINFO args = {};
+	args.hAdapter = d3dkmt_openluid.hAdapter;
+	args.Type = KMTQAITYPE_WDDM_2_7_CAPS;
+	args.pPrivateDriverData = &caps;
+	args.PrivateDriverDataSize = sizeof(caps);
+	res = D3DKMTQueryAdapterInfo(&args);
+
+	/* If this still fails we're likely on Windows 10 pre-2004
+	 * where HAGS is not supported anyway. */
+	if (SUCCEEDED(res)) {
+		HagsStatus status(&caps);
+
+		/* Starting with Windows 10 21H2 we can query more detailed
+		 * support information (e.g. experimental status).
+		 * This Is optional and failure doesn't matter. */
+		D3DKMT_WDDM_2_9_CAPS ext_caps = {};
+		args.hAdapter = d3dkmt_openluid.hAdapter;
+		args.Type = KMTQAITYPE_WDDM_2_9_CAPS;
+		args.pPrivateDriverData = &ext_caps;
+		args.PrivateDriverDataSize = sizeof(ext_caps);
+		res = D3DKMTQueryAdapterInfo(&args);
+
+		if (SUCCEEDED(res))
+			status.SetDriverSupport(ext_caps.HwSchSupportState);
+
+		ret = status;
+	} else {
+		blog(LOG_WARNING, "Failed querying WDDM 2.7 caps: %x", res);
+	}
+
+	D3DKMT_CLOSEADAPTER d3dkmt_close = {d3dkmt_openluid.hAdapter};
+	res = D3DKMTCloseAdapter(&d3dkmt_close);
+	if (FAILED(res)) {
+		blog(LOG_DEBUG, "Failed closing D3DKMT adapter %x: %x",
+		     d3dkmt_openluid.hAdapter, res);
+	}
+
+	return ret;
+}
 
 static bool CheckFormat(ID3D11Device *device, DXGI_FORMAT format)
 {
@@ -573,9 +677,19 @@ void gs_device::InitDevice(uint32_t adapterIdx)
 		blog(LOG_INFO, "DXGI increase maximum frame latency failed");
 	}
 
+	/* Log HAGS status */
+	bool hags_enabled = false;
+	if (auto hags_status = GetAdapterHagsStatus(&desc))
+		hags_enabled = hags_status->enabled;
+
+	if (hags_enabled) {
+		blog(LOG_WARNING,
+		     "Hardware-Accelerated GPU Scheduling enabled on adapter!");
+	}
+
 	/* adjust gpu thread priority on non-intel GPUs */
-#if USE_GPU_PRIORITY
-	if (desc.VendorId != 0x8086 && !set_priority(device)) {
+#ifdef USE_GPU_PRIORITY
+	if (desc.VendorId != 0x8086 && !set_priority(device, hags_enabled)) {
 		blog(LOG_INFO, "D3D11 GPU priority setup "
 			       "failed (not admin?)");
 	}
@@ -1346,6 +1460,13 @@ static inline void LogD3DAdapters()
 		     desc.SharedSystemMemory);
 		blog(LOG_INFO, "\t  PCI ID:         %x:%x", desc.VendorId,
 		     desc.DeviceId);
+
+		if (auto hags_support = GetAdapterHagsStatus(&desc)) {
+			blog(LOG_INFO, "\t  HAGS Status:    %s",
+			     hags_support->ToString().c_str());
+		} else {
+			blog(LOG_WARNING, "\t  HAGS Status:    Unknown");
+		}
 
 		/* driver version */
 		LARGE_INTEGER umd;

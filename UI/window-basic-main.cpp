@@ -1,7 +1,7 @@
 /******************************************************************************
-    Copyright (C) 2013-2015 by Hugh Bailey <obs.jim@gmail.com>
-                               Zachary Lund <admin@computerquip.com>
-                               Philippe Groarke <philippe.groarke@gmail.com>
+    Copyright (C) 2023 by Lain Bailey <lain@obsproject.com>
+                          Zachary Lund <admin@computerquip.com>
+                          Philippe Groarke <philippe.groarke@gmail.com>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -34,6 +34,7 @@
 #include <QSizePolicy>
 #include <QScrollBar>
 #include <QTextStream>
+#include <QActionGroup>
 
 #include <util/dstr.h>
 #include <util/util.hpp>
@@ -343,6 +344,7 @@ OBSBasic::OBSBasic(QWidget *parent)
 	qRegisterMetaTypeStreamOperators<std::vector<std::shared_ptr<OBSSignal>>>(
 		"std::vector<std::shared_ptr<OBSSignal>>");
 	qRegisterMetaTypeStreamOperators<OBSScene>("OBSScene");
+	qRegisterMetaTypeStreamOperators<OBSSource>("OBSSource");
 #endif
 
 	ui->scenes->setAttribute(Qt::WA_MacShowFocusRect, false);
@@ -351,6 +353,11 @@ OBSBasic::OBSBasic(QWidget *parent)
 	bool sceneGrid = config_get_bool(App()->GlobalConfig(), "BasicWindow",
 					 "gridMode");
 	ui->scenes->SetGridMode(sceneGrid);
+
+	if (sceneGrid)
+		ui->actionSceneGridMode->setChecked(true);
+	else
+		ui->actionSceneListMode->setChecked(true);
 
 	ui->scenes->setItemDelegate(new SceneRenameDelegate(ui->scenes));
 
@@ -392,12 +399,12 @@ OBSBasic::OBSBasic(QWidget *parent)
 	connect(diskFullTimer, SIGNAL(timeout()), this,
 		SLOT(CheckDiskSpaceRemaining()));
 
-	renameScene = new QAction(ui->scenesDock);
+	renameScene = new QAction(QTStr("Rename"), ui->scenesDock);
 	renameScene->setShortcutContext(Qt::WidgetWithChildrenShortcut);
 	connect(renameScene, SIGNAL(triggered()), this, SLOT(EditSceneName()));
 	ui->scenesDock->addAction(renameScene);
 
-	renameSource = new QAction(ui->sourcesDock);
+	renameSource = new QAction(QTStr("Rename"), ui->sourcesDock);
 	renameSource->setShortcutContext(Qt::WidgetWithChildrenShortcut);
 	connect(renameSource, SIGNAL(triggered()), this,
 		SLOT(EditSceneItemName()));
@@ -514,8 +521,11 @@ OBSBasic::OBSBasic(QWidget *parent)
 	connect(ui->broadcastButton, &QPushButton::clicked, this,
 		&OBSBasic::BroadcastButtonClicked);
 
-	connect(App(), &OBSApp::StyleChanged, this,
-		&OBSBasic::ResetProxyStyleSliders);
+	connect(App(), &OBSApp::StyleChanged, this, &OBSBasic::ThemeChanged);
+
+	QActionGroup *actionGroup = new QActionGroup(this);
+	actionGroup->addAction(ui->actionSceneListMode);
+	actionGroup->addAction(ui->actionSceneGridMode);
 
 	UpdatePreviewSafeAreas();
 	UpdatePreviewSpacingHelpers();
@@ -785,11 +795,11 @@ void OBSBasic::Save(const char *file)
 	if (vcamEnabled) {
 		OBSDataAutoRelease obj = obs_data_create();
 
-		obs_data_set_int(obj, "type", (int)vcamConfig.type);
+		obs_data_set_int(obj, "type2", (int)vcamConfig.type);
 		switch (vcamConfig.type) {
-		case VCamOutputType::InternalOutput:
-			obs_data_set_int(obj, "internal",
-					 (int)vcamConfig.internal);
+		case VCamOutputType::Invalid:
+		case VCamOutputType::ProgramView:
+		case VCamOutputType::PreviewOutput:
 			break;
 		case VCamOutputType::SceneOutput:
 			obs_data_set_string(obj, "scene",
@@ -1065,8 +1075,17 @@ static inline void AddMissingFiles(void *data, obs_source_t *source)
 void OBSBasic::LoadData(obs_data_t *data, const char *file)
 {
 	ClearSceneData();
-	InitDefaultTransitions();
 	ClearContextBar();
+
+	/* Exit OBS if clearing scene data failed for some reason. */
+	if (clearingFailed) {
+		OBSMessageBox::critical(this, QTStr("SourceLeak.Title"),
+					QTStr("SourceLeak.Text"));
+		close();
+		return;
+	}
+
+	InitDefaultTransitions();
 
 	if (devicePropertiesThread && devicePropertiesThread->isRunning()) {
 		devicePropertiesThread->wait();
@@ -1220,9 +1239,26 @@ retryScene:
 		OBSDataAutoRelease obj =
 			obs_data_get_obj(data, "virtual-camera");
 
-		vcamConfig.type = (VCamOutputType)obs_data_get_int(obj, "type");
-		vcamConfig.internal =
-			(VCamInternalType)obs_data_get_int(obj, "internal");
+		vcamConfig.type =
+			(VCamOutputType)obs_data_get_int(obj, "type2");
+		if (vcamConfig.type == VCamOutputType::Invalid)
+			vcamConfig.type =
+				(VCamOutputType)obs_data_get_int(obj, "type");
+
+		if (vcamConfig.type == VCamOutputType::Invalid) {
+			VCamInternalType internal =
+				(VCamInternalType)obs_data_get_int(obj,
+								   "internal");
+
+			switch (internal) {
+			case VCamInternalType::Default:
+				vcamConfig.type = VCamOutputType::ProgramView;
+				break;
+			case VCamInternalType::Preview:
+				vcamConfig.type = VCamOutputType::PreviewOutput;
+				break;
+			}
+		}
 		vcamConfig.scene = obs_data_get_string(obj, "scene");
 		vcamConfig.source = obs_data_get_string(obj, "source");
 	}
@@ -1271,7 +1307,7 @@ retryScene:
 
 	disableSaving--;
 
-	if (vcamEnabled && vcamConfig.internal == VCamInternalType::Preview)
+	if (vcamEnabled)
 		outputHandler->UpdateVirtualCamOutputSource();
 
 	if (api) {
@@ -1333,7 +1369,8 @@ bool OBSBasic::LoadService()
 		return false;
 
 	/* Enforce Opus on FTL if needed */
-	if (strcmp(obs_service_get_protocol(service), "FTL") == 0) {
+	if (strcmp(obs_service_get_protocol(service), "FTL") == 0 ||
+	    strcmp(obs_service_get_protocol(service), "WHIP") == 0) {
 		const char *option = config_get_string(
 			basicConfig, "SimpleOutput", "StreamAudioEncoder");
 		if (strcmp(option, "opus") != 0)
@@ -2152,6 +2189,13 @@ void OBSBasic::OBSInit()
 	ui->lockDocks->setChecked(docksLocked);
 	ui->lockDocks->blockSignals(false);
 
+	bool sideDocks = config_get_bool(App()->GlobalConfig(), "BasicWindow",
+					 "SideDocks");
+	on_sideDocks_toggled(sideDocks);
+	ui->sideDocks->blockSignals(true);
+	ui->sideDocks->setChecked(sideDocks);
+	ui->sideDocks->blockSignals(false);
+
 	SystemTray(true);
 
 	TaskbarOverlayInit();
@@ -2784,6 +2828,9 @@ OBSBasic::~OBSBasic()
 	if (updateCheckThread && updateCheckThread->isRunning())
 		updateCheckThread->wait();
 
+	if (patronJsonThread && patronJsonThread->isRunning())
+		patronJsonThread->wait();
+
 	delete screenshotData;
 	delete previewProjector;
 	delete studioProgramProjector;
@@ -2877,6 +2924,8 @@ OBSBasic::~OBSBasic()
 			"PreviewProgramMode", IsPreviewProgramMode());
 	config_set_bool(App()->GlobalConfig(), "BasicWindow", "DocksLocked",
 			ui->lockDocks->isChecked());
+	config_set_bool(App()->GlobalConfig(), "BasicWindow", "SideDocks",
+			ui->sideDocks->isChecked());
 	config_save_safe(App()->GlobalConfig(), "tmp", nullptr);
 
 #ifdef BROWSER_AVAILABLE
@@ -4446,8 +4495,6 @@ void OBSBasic::RenderMain(void *data, uint32_t, uint32_t)
 		 100.0f);
 	gs_reset_viewport();
 
-	window->ui->preview->DrawSceneEditing();
-
 	uint32_t targetCX = window->previewCX;
 	uint32_t targetCY = window->previewCY;
 
@@ -4460,6 +4507,8 @@ void OBSBasic::RenderMain(void *data, uint32_t, uint32_t)
 		RenderSafeAreas(window->topLine, targetCX, targetCY);
 		RenderSafeAreas(window->rightLine, targetCX, targetCY);
 	}
+
+	window->ui->preview->DrawSceneEditing();
 
 	if (window->drawSpacingHelpers)
 		window->ui->preview->DrawSpacingHelpers();
@@ -4848,6 +4897,13 @@ void OBSBasic::ClearSceneData()
 	for (int i = 0; i < MAX_CHANNELS; i++)
 		obs_set_output_source(i, nullptr);
 
+	/* Reset VCam to default to clear its private scene and any references
+	 * it holds. It will be reconfigured during loading. */
+	if (vcamEnabled) {
+		vcamConfig.type = VCamOutputType::ProgramView;
+		outputHandler->UpdateVirtualCamOutputSource();
+	}
+
 	lastScene = nullptr;
 	swapScene = nullptr;
 	programScene = nullptr;
@@ -4878,12 +4934,52 @@ void OBSBasic::ClearSceneData()
 		QApplication::sendPostedEvents(nullptr);
 	} while (obs_wait_for_destroy_queue());
 
+	/* Pump Qt events one final time to give remaining signals time to be
+	 * processed (since this happens after the destroy thread finishes and
+	 * the audio/video threads have processed their tasks). */
+	QApplication::sendPostedEvents(nullptr);
+
 	unsetCursor();
 
-	disableSaving--;
+	/* If scene data wasn't actually cleared, e.g. faulty plugin holding a
+	 * reference, they will still be in the hash table, enumerate them and
+	 * store the names for logging purposes. */
+	auto cb2 = [](void *param, obs_source_t *source) {
+		auto orphans = static_cast<vector<string> *>(param);
+		orphans->push_back(obs_source_get_name(source));
+		return true;
+	};
 
-	blog(LOG_INFO, "All scene data cleared");
-	blog(LOG_INFO, "------------------------------------------------");
+	vector<string> orphan_sources;
+	obs_enum_sources(cb2, &orphan_sources);
+
+	if (!orphan_sources.empty()) {
+		/* Avoid logging list twice in case it gets called after
+		 * setting the flag the first time. */
+		if (!clearingFailed) {
+			/* This ugly mess exists to join a vector of strings
+			 * with a user-defined delimiter. */
+			string orphan_names = std::accumulate(
+				orphan_sources.begin(), orphan_sources.end(),
+				string(""), [](string a, string b) {
+					return std::move(a) + "\n- " + b;
+				});
+
+			blog(LOG_ERROR,
+			     "Not all sources were cleared when clearing scene data:\n%s\n",
+			     orphan_names.c_str());
+		}
+
+		/* We do not decrement disableSaving here to avoid OBS
+		 * overwriting user data with garbage. */
+		clearingFailed = true;
+	} else {
+		disableSaving--;
+
+		blog(LOG_INFO, "All scene data cleared");
+		blog(LOG_INFO,
+		     "------------------------------------------------");
+	}
 }
 
 void OBSBasic::closeEvent(QCloseEvent *event)
@@ -4914,7 +5010,8 @@ void OBSBasic::closeEvent(QCloseEvent *event)
 	bool confirmOnExit =
 		config_get_bool(GetGlobalConfig(), "General", "ConfirmOnExit");
 
-	if (confirmOnExit && outputHandler && outputHandler->Active()) {
+	if (confirmOnExit && outputHandler && outputHandler->Active() &&
+	    !clearingFailed) {
 		SetShowing(true);
 
 		QMessageBox::StandardButton button = OBSMessageBox::question(
@@ -5229,7 +5326,7 @@ void OBSBasic::on_scenes_currentItemChanged(QListWidgetItem *current,
 
 	SetCurrentScene(source);
 
-	if (vcamEnabled && vcamConfig.internal == VCamInternalType::Preview)
+	if (vcamEnabled && vcamConfig.type == VCamOutputType::PreviewOutput)
 		outputHandler->UpdateVirtualCamOutputSource();
 
 	if (api)
@@ -5323,9 +5420,8 @@ void OBSBasic::on_scenes_customContextMenuRequested(const QPoint &pos)
 		popup.addAction(copyFilters);
 		popup.addAction(pasteFilters);
 		popup.addSeparator();
-		popup.addAction(QTStr("Rename"), this, SLOT(EditSceneName()));
-		popup.addAction(QTStr("Remove"), this,
-				SLOT(RemoveSelectedScene()));
+		popup.addAction(renameScene);
+		popup.addAction(ui->actionRemoveScene);
 		popup.addSeparator();
 
 		order.addAction(QTStr("Basic.MainMenu.Edit.Order.MoveUp"), this,
@@ -5405,10 +5501,28 @@ void OBSBasic::on_scenes_customContextMenuRequested(const QPoint &pos)
 	popup.exec(QCursor::pos());
 }
 
+void OBSBasic::on_actionSceneListMode_triggered()
+{
+	ui->scenes->SetGridMode(false);
+}
+
+void OBSBasic::on_actionSceneGridMode_triggered()
+{
+	ui->scenes->SetGridMode(true);
+}
+
 void OBSBasic::GridActionClicked()
 {
 	bool gridMode = !ui->scenes->GetGridMode();
 	ui->scenes->SetGridMode(gridMode);
+
+	if (gridMode)
+		ui->actionSceneGridMode->setChecked(true);
+	else
+		ui->actionSceneListMode->setChecked(true);
+
+	config_set_bool(App()->GlobalConfig(), "BasicWindow", "gridMode",
+			gridMode);
 }
 
 void OBSBasic::on_actionAddScene_triggered()
@@ -5831,10 +5945,8 @@ void OBSBasic::CreateSourcePopupMenu(int idx, bool preview)
 		colorSelect = new ColorSelect(colorMenu);
 		popup.addMenu(AddBackgroundColorMenu(
 			colorMenu, colorWidgetAction, colorSelect, sceneItem));
-		popup.addAction(QTStr("Rename"), this,
-				SLOT(EditSceneItemName()));
-		popup.addAction(QTStr("Remove"), this,
-				SLOT(on_actionRemoveSource_triggered()));
+		popup.addAction(renameSource);
+		popup.addAction(ui->actionRemoveSource);
 		popup.addSeparator();
 
 		popup.addMenu(ui->orderMenu);
@@ -6520,21 +6632,20 @@ static void RenameListItem(OBSBasic *parent, QListWidget *listWidget,
 		auto undo = [prev = std::string(prevName)](
 				    const std::string &data) {
 			OBSSourceAutoRelease source =
-				obs_get_source_by_name(data.c_str());
+				obs_get_source_by_uuid(data.c_str());
 			obs_source_set_name(source, prev.c_str());
 		};
 
 		auto redo = [name](const std::string &data) {
 			OBSSourceAutoRelease source =
-				obs_get_source_by_name(data.c_str());
+				obs_get_source_by_uuid(data.c_str());
 			obs_source_set_name(source, name.c_str());
 		};
 
-		std::string undo_data(name);
-		std::string redo_data(prevName);
+		std::string source_uuid(obs_source_get_uuid(source));
 		parent->undo_s.add_action(
 			QTStr("Undo.Rename").arg(name.c_str()), undo, redo,
-			undo_data, redo_data);
+			source_uuid, source_uuid);
 
 		listItem->setText(QT_UTF8(name.c_str()));
 		obs_source_set_name(source, name.c_str());
@@ -6666,7 +6777,7 @@ void OBSBasic::YoutubeStreamCheck(const std::string &key)
 	YoutubeApiWrappers *apiYouTube(
 		dynamic_cast<YoutubeApiWrappers *>(GetAuth()));
 	if (!apiYouTube) {
-		/* technically we should never get here -Jim */
+		/* technically we should never get here -Lain */
 		QMetaObject::invokeMethod(this, "ForceStopStreaming",
 					  Qt::QueuedConnection);
 		youtubeStreamCheckThread->deleteLater();
@@ -7399,16 +7510,17 @@ void OBSBasic::AutoRemux(QString input, bool no_show)
 	const char *format = config_get_string(
 		config, isSimpleMode ? "SimpleOutput" : "AdvOut", "RecFormat2");
 
-	/* AV1+PCM cannot be remuxed into any supported format (until FFmpeg 6.1) */
-	if (strcmp(vCodecName, "av1") == 0 &&
-	    strncmp(aCodecName, "pcm", 3) == 0)
+	bool audio_is_pcm = strncmp(aCodecName, "pcm", 3) == 0;
+	/* FFmpeg <= 6.0 cannot remux AV1+PCM into any supported format. */
+	if (audio_is_pcm && !ff_supports_pcm_in_mp4() &&
+	    strcmp(vCodecName, "av1") == 0)
 		return;
 
 	/* Retain original container for fMP4/fMOV */
 	if (strncmp(format, "fragmented", 10) == 0) {
 		output += "remuxed." + suffix;
 	} else if (strcmp(vCodecName, "prores") == 0 ||
-		   strncmp(aCodecName, "pcm", 3) == 0) {
+		   (audio_is_pcm && !ff_supports_pcm_in_mp4())) {
 		output += "mov";
 	} else {
 		output += "mp4";
@@ -7848,6 +7960,13 @@ void OBSBasic::OnVirtualCamStop(int)
 	blog(LOG_INFO, VIRTUAL_CAM_STOP);
 
 	OnDeactivate();
+
+	if (!restartingVCam)
+		return;
+
+	/* Restarting needs to be delayed to make sure that the virtual camera
+	 * implementation is stopped and avoid race condition. */
+	QTimer::singleShot(100, this, &OBSBasic::RestartingVirtualCam);
 }
 
 void OBSBasic::on_streamButton_clicked()
@@ -8002,10 +8121,13 @@ void OBSBasic::VCamButtonClicked()
 
 void OBSBasic::VCamConfigButtonClicked()
 {
-	OBSBasicVCamConfig dialog(vcamConfig, this);
+	OBSBasicVCamConfig dialog(vcamConfig, outputHandler->VirtualCamActive(),
+				  this);
 
 	connect(&dialog, &OBSBasicVCamConfig::Accepted, this,
 		&OBSBasic::UpdateVirtualCamConfig);
+	connect(&dialog, &OBSBasicVCamConfig::AcceptedAndRestart, this,
+		&OBSBasic::RestartVirtualCam);
 
 	dialog.exec();
 }
@@ -8015,6 +8137,25 @@ void OBSBasic::UpdateVirtualCamConfig(const VCamConfig &config)
 	vcamConfig = config;
 
 	outputHandler->UpdateVirtualCamOutputSource();
+}
+
+void OBSBasic::RestartVirtualCam(const VCamConfig &config)
+{
+	restartingVCam = true;
+
+	StopVirtualCam();
+
+	vcamConfig = config;
+}
+
+void OBSBasic::RestartingVirtualCam()
+{
+	if (!restartingVCam)
+		return;
+
+	outputHandler->UpdateVirtualCamOutputSource();
+	StartVirtualCam();
+	restartingVCam = false;
 }
 
 void OBSBasic::on_settingsButton_clicked()
@@ -8229,8 +8370,10 @@ void OBSBasic::GetConfigFPS(uint32_t &num, uint32_t &den) const
 		GetFPSInteger(num, den);
 	else if (type == 2) //"Fraction"
 		GetFPSFraction(num, den);
-	else if (false) //"Nanoseconds", currently not implemented
-		GetFPSNanoseconds(num, den);
+	/*
+	 * 	else if (false) //"Nanoseconds", currently not implemented
+	 *		GetFPSNanoseconds(num, den);
+	 */
 	else
 		GetFPSCommon(num, den);
 }
@@ -8338,7 +8481,7 @@ void undo_redo(const std::string &data)
 {
 	OBSDataAutoRelease dat = obs_data_create_from_json(data.c_str());
 	OBSSourceAutoRelease source =
-		obs_get_source_by_name(obs_data_get_string(dat, "scene_name"));
+		obs_get_source_by_uuid(obs_data_get_string(dat, "scene_uuid"));
 	reinterpret_cast<OBSBasic *>(App()->GetMainWindow())
 		->SetCurrentScene(source.Get(), true);
 
@@ -9127,7 +9270,7 @@ void OBSBasic::UpdateTitleBar()
 
 	name << App()->GetVersionString(false);
 	if (App()->IsPortableMode())
-		name << " - Portable Mode";
+		name << " - " << Str("TitleBar.PortableMode");
 
 	name << " - " << Str("TitleBar.Profile") << ": " << profile;
 	name << " - " << Str("TitleBar.Scenes") << ": " << sceneCollection;
@@ -9165,15 +9308,18 @@ void OBSBasic::on_resetDocks_triggered(bool force)
 	for (int i = oldExtraDocks.size() - 1; i >= 0; i--) {
 		if (!oldExtraDocks[i]) {
 			oldExtraDocks.removeAt(i);
+			oldExtraDockNames.removeAt(i);
 		}
 	}
 
 #ifdef BROWSER_AVAILABLE
 	if ((oldExtraDocks.size() || extraDocks.size() ||
-	     extraBrowserDocks.size()) &&
+	     extraCustomDocks.size() || extraBrowserDocks.size()) &&
 	    !force) {
 #else
-	if ((oldExtraDocks.size() || extraDocks.size()) && !force) {
+	if ((oldExtraDocks.size() || extraDocks.size() ||
+	     extraCustomDocks.size()) &&
+	    !force) {
 #endif
 		QMessageBox::StandardButton button = QMessageBox::question(
 			this, QTStr("ResetUIWarning.Title"),
@@ -9206,6 +9352,7 @@ void OBSBasic::on_resetDocks_triggered(bool force)
 	}
 
 	RESET_DOCKLIST(extraDocks)
+	RESET_DOCKLIST(extraCustomDocks)
 #ifdef BROWSER_AVAILABLE
 	RESET_DOCKLIST(extraBrowserDocks)
 #endif
@@ -9265,6 +9412,9 @@ void OBSBasic::on_lockDocks_toggled(bool lock)
 	for (int i = extraDocks.size() - 1; i >= 0; i--)
 		extraDocks[i]->setFeatures(features);
 
+	for (int i = extraCustomDocks.size() - 1; i >= 0; i--)
+		extraCustomDocks[i]->setFeatures(features);
+
 #ifdef BROWSER_AVAILABLE
 	for (int i = extraBrowserDocks.size() - 1; i >= 0; i--)
 		extraBrowserDocks[i]->setFeatures(features);
@@ -9273,9 +9423,25 @@ void OBSBasic::on_lockDocks_toggled(bool lock)
 	for (int i = oldExtraDocks.size() - 1; i >= 0; i--) {
 		if (!oldExtraDocks[i]) {
 			oldExtraDocks.removeAt(i);
+			oldExtraDockNames.removeAt(i);
 		} else {
 			oldExtraDocks[i]->setFeatures(features);
 		}
+	}
+}
+
+void OBSBasic::on_sideDocks_toggled(bool side)
+{
+	if (side) {
+		setCorner(Qt::TopLeftCorner, Qt::LeftDockWidgetArea);
+		setCorner(Qt::TopRightCorner, Qt::RightDockWidgetArea);
+		setCorner(Qt::BottomLeftCorner, Qt::LeftDockWidgetArea);
+		setCorner(Qt::BottomRightCorner, Qt::RightDockWidgetArea);
+	} else {
+		setCorner(Qt::TopLeftCorner, Qt::TopDockWidgetArea);
+		setCorner(Qt::TopRightCorner, Qt::TopDockWidgetArea);
+		setCorner(Qt::BottomLeftCorner, Qt::BottomDockWidgetArea);
+		setCorner(Qt::BottomRightCorner, Qt::BottomDockWidgetArea);
 	}
 }
 
@@ -9287,6 +9453,8 @@ void OBSBasic::on_resetUI_triggered()
 	ui->toggleContextBar->setChecked(true);
 	ui->toggleSourceIcons->setChecked(true);
 	ui->toggleStatusBar->setChecked(true);
+	ui->scenes->SetGridMode(false);
+	ui->actionSceneListMode->setChecked(true);
 }
 
 void OBSBasic::on_multiviewProjectorWindowed_triggered()
@@ -9298,6 +9466,7 @@ void OBSBasic::on_toggleListboxToolbars_toggled(bool visible)
 {
 	ui->sourcesToolbar->setVisible(visible);
 	ui->scenesToolbar->setVisible(visible);
+	ui->mixerToolbar->setVisible(visible);
 
 	config_set_bool(App()->GlobalConfig(), "BasicWindow",
 			"ShowListboxToolbars", visible);
@@ -9306,11 +9475,13 @@ void OBSBasic::on_toggleListboxToolbars_toggled(bool visible)
 void OBSBasic::ShowContextBar()
 {
 	on_toggleContextBar_toggled(true);
+	ui->toggleContextBar->setChecked(true);
 }
 
 void OBSBasic::HideContextBar()
 {
 	on_toggleContextBar_toggled(false);
+	ui->toggleContextBar->setChecked(false);
 }
 
 void OBSBasic::on_toggleContextBar_toggled(bool visible)
@@ -9776,8 +9947,8 @@ void OBSBasic::CreateFilterPasteUndoRedoAction(const QString &text,
 			obs_data_create_from_json(json.c_str());
 		OBSDataArrayAutoRelease array =
 			obs_data_get_array(data, "array");
-		const char *name = obs_data_get_string(data, "name");
-		OBSSourceAutoRelease source = obs_get_source_by_name(name);
+		OBSSourceAutoRelease source = obs_get_source_by_uuid(
+			obs_data_get_string(data, "uuid"));
 
 		obs_source_restore_filters(source, array);
 
@@ -9785,14 +9956,14 @@ void OBSBasic::CreateFilterPasteUndoRedoAction(const QString &text,
 			filters->UpdateSource(source);
 	};
 
-	const char *name = obs_source_get_name(source);
+	const char *uuid = obs_source_get_uuid(source);
 
 	OBSDataAutoRelease undo_data = obs_data_create();
 	OBSDataAutoRelease redo_data = obs_data_create();
 	obs_data_set_array(undo_data, "array", undo_array);
 	obs_data_set_array(redo_data, "array", redo_array);
-	obs_data_set_string(undo_data, "name", name);
-	obs_data_set_string(redo_data, "name", name);
+	obs_data_set_string(undo_data, "uuid", uuid);
+	obs_data_set_string(redo_data, "uuid", uuid);
 
 	undo_s.add_action(text, undo_redo, undo_redo,
 			  obs_data_get_json(undo_data),
@@ -10063,6 +10234,10 @@ void OBSBasic::ResizeOutputSizeOfSource()
 
 QAction *OBSBasic::AddDockWidget(QDockWidget *dock)
 {
+	// Prevent the object name from being changed
+	connect(dock, &QObject::objectNameChanged, this,
+		&OBSBasic::RepairOldExtraDockName);
+
 #ifdef BROWSER_AVAILABLE
 	QAction *action = new QAction(dock->windowTitle(), ui->menuDocks);
 
@@ -10077,6 +10252,7 @@ QAction *OBSBasic::AddDockWidget(QDockWidget *dock)
 	action->setCheckable(true);
 	assignDockToggle(dock, action);
 	oldExtraDocks.push_back(dock);
+	oldExtraDockNames.push_back(dock->objectName());
 
 	bool lock = ui->lockDocks->isChecked();
 	QDockWidget::DockWidgetFeatures features =
@@ -10091,10 +10267,28 @@ QAction *OBSBasic::AddDockWidget(QDockWidget *dock)
 	for (int i = oldExtraDocks.size() - 1; i >= 0; i--) {
 		if (!oldExtraDocks[i]) {
 			oldExtraDocks.removeAt(i);
+			oldExtraDockNames.removeAt(i);
 		}
 	}
 
 	return action;
+}
+
+void OBSBasic::RepairOldExtraDockName()
+{
+	QDockWidget *dock = reinterpret_cast<QDockWidget *>(sender());
+	int idx = oldExtraDocks.indexOf(dock);
+	QSignalBlocker block(dock);
+
+	if (idx == -1) {
+		blog(LOG_WARNING, "A dock got its object name changed");
+		return;
+	}
+
+	blog(LOG_WARNING, "The dock '%s' got its object name restored",
+	     QT_TO_UTF8(oldExtraDockNames[idx]));
+
+	dock->setObjectName(oldExtraDockNames[idx]);
 }
 
 void OBSBasic::AddDockWidget(QDockWidget *dock, Qt::DockWidgetArea area,
@@ -10138,13 +10332,70 @@ void OBSBasic::AddDockWidget(QDockWidget *dock, Qt::DockWidgetArea area,
 
 void OBSBasic::RemoveDockWidget(const QString &name)
 {
-	if (!extraDockNames.contains(name))
-		return;
+	if (extraDockNames.contains(name)) {
+		int idx = extraDockNames.indexOf(name);
+		extraDockNames.removeAt(idx);
+		extraDocks[idx].clear();
+		extraDocks.removeAt(idx);
+	} else if (extraCustomDockNames.contains(name)) {
+		int idx = extraCustomDockNames.indexOf(name);
+		extraCustomDockNames.removeAt(idx);
+		removeDockWidget(extraCustomDocks[idx]);
+		extraCustomDocks.removeAt(idx);
+	}
+}
 
-	int idx = extraDockNames.indexOf(name);
-	extraDockNames.removeAt(idx);
-	extraDocks[idx].clear();
-	extraDocks.removeAt(idx);
+bool OBSBasic::IsDockObjectNameUsed(const QString &name)
+{
+	QStringList list;
+	list << "scenesDock"
+	     << "sourcesDock"
+	     << "mixerDock"
+	     << "transitionsDock"
+	     << "controlsDock"
+	     << "statsDock";
+	list << oldExtraDockNames;
+	list << extraDockNames;
+	list << extraCustomDockNames;
+
+	return list.contains(name);
+}
+
+void OBSBasic::AddCustomDockWidget(QDockWidget *dock)
+{
+	// Prevent the object name from being changed
+	connect(dock, &QObject::objectNameChanged, this,
+		&OBSBasic::RepairCustomExtraDockName);
+
+	bool lock = ui->lockDocks->isChecked();
+	QDockWidget::DockWidgetFeatures features =
+		lock ? QDockWidget::NoDockWidgetFeatures
+		     : (QDockWidget::DockWidgetClosable |
+			QDockWidget::DockWidgetMovable |
+			QDockWidget::DockWidgetFloatable);
+
+	dock->setFeatures(features);
+	addDockWidget(Qt::RightDockWidgetArea, dock);
+
+	extraCustomDockNames.push_back(dock->objectName());
+	extraCustomDocks.push_back(dock);
+}
+
+void OBSBasic::RepairCustomExtraDockName()
+{
+	QDockWidget *dock = reinterpret_cast<QDockWidget *>(sender());
+	int idx = extraCustomDocks.indexOf(dock);
+	QSignalBlocker block(dock);
+
+	if (idx == -1) {
+		blog(LOG_WARNING, "A custom dock got its object name changed");
+		return;
+	}
+
+	blog(LOG_WARNING, "The custom dock '%s' got its object name restored",
+	     QT_TO_UTF8(extraCustomDockNames[idx]));
+
+	dock->setObjectName(extraCustomDockNames[idx]);
 }
 
 OBSBasic *OBSBasic::Get()
@@ -10656,7 +10907,7 @@ float OBSBasic::GetDevicePixelRatio()
 	return dpi;
 }
 
-void OBSBasic::ResetProxyStyleSliders()
+void OBSBasic::ThemeChanged()
 {
 	/* Since volume/media sliders are using QProxyStyle, they are not
 	* updated when themes are changed, so re-initialize them. */

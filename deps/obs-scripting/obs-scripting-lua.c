@@ -1,5 +1,5 @@
 /******************************************************************************
-    Copyright (C) 2017 by Hugh Bailey <jim@obsproject.com>
+    Copyright (C) 2023 by Lain Bailey <lain@obsproject.com>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -129,7 +129,8 @@ static bool load_lua_script(struct obs_lua_script *data)
 		goto fail;
 	}
 
-	if (luaL_loadbuffer(script, file_data, strlen(file_data), NULL) != 0) {
+	if (luaL_loadbuffer(script, file_data, strlen(file_data),
+			    data->base.path.array) != 0) {
 		script_warn(&data->base, "Error loading file: %s",
 			    lua_tostring(script, -1));
 		bfree(file_data);
@@ -1227,9 +1228,12 @@ void obs_lua_script_unload(obs_script_t *s)
 	/* call script_unload           */
 
 	pthread_mutex_lock(&data->mutex);
+	current_lua_script = data;
 
 	lua_getglobal(script, "script_unload");
 	lua_pcall(script, 0, 0, 0);
+
+	current_lua_script = NULL;
 
 	/* ---------------------------- */
 	/* remove all callbacks         */

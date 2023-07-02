@@ -1,5 +1,5 @@
 /******************************************************************************
-    Copyright (C) 2014 by Hugh Bailey <obs.jim@gmail.com>
+    Copyright (C) 2023 by Lain Bailey <lain@obsproject.com>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -694,10 +694,13 @@ static void *obs_x264_create(obs_data_t *settings, obs_encoder_t *encoder)
 	switch (voi->format) {
 	case VIDEO_FORMAT_I010:
 	case VIDEO_FORMAT_P010:
-		obs_encoder_set_last_error(encoder,
-					   obs_module_text("10bitUnsupported"));
-		warn_enc(encoder,
-			 "OBS does not support using x264 with 10-bit formats");
+	case VIDEO_FORMAT_P216:
+	case VIDEO_FORMAT_P416:
+		obs_encoder_set_last_error(
+			encoder, obs_module_text("HighPrecisionUnsupported"));
+		warn_enc(
+			encoder,
+			"OBS does not support using x264 with high-precision formats");
 		return NULL;
 	default:
 		if (voi->colorspace == VIDEO_CS_2100_PQ ||

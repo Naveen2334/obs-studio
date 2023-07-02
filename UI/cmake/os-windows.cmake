@@ -29,7 +29,7 @@ target_sources(
           update/win-update.hpp)
 
 target_link_libraries(obs-studio PRIVATE crypt32 OBS::blake2 OBS::w32-pthreads MbedTLS::MbedTLS Detours::Detours)
-target_compile_options(obs-studio PRIVATE PSAPI_VERSION=2)
+target_compile_definitions(obs-studio PRIVATE PSAPI_VERSION=2)
 target_link_options(obs-studio PRIVATE /IGNORE:4098 /IGNORE:4099)
 
 add_library(obs-update-helpers INTERFACE)
@@ -37,6 +37,7 @@ add_library(OBS::update-helpers ALIAS obs-update-helpers)
 
 target_sources(obs-update-helpers INTERFACE win-update/win-update-helpers.cpp win-update/win-update-helpers.hpp)
 target_include_directories(obs-update-helpers INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/win-update")
+set_source_files_properties(update/win-update.cpp PROPERTIES COMPILE_DEFINITIONS OBS_COMMIT="${OBS_COMMIT}")
 
 add_subdirectory(win-update/updater)
 
@@ -48,8 +49,6 @@ set_property(
 set_property(DIRECTORY ${CMAKE_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT obs-studio)
 set_target_properties(
   obs-studio
-  PROPERTIES
-    WIN32_EXECUTABLE TRUE
-    VS_DEBUGGER_COMMAND
-    "${CMAKE_BINARY_DIR}/rundir/$<CONFIG>/$<$<BOOL:${OBS_WINDOWS_LEGACY_DIRS}>:bin/>$<TARGET_FILE_NAME:obs-studio>"
-    VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/rundir/$<CONFIG>$<$<BOOL:${OBS_WINDOWS_LEGACY_DIRS}>:/bin>")
+  PROPERTIES WIN32_EXECUTABLE TRUE
+             VS_DEBUGGER_COMMAND "${CMAKE_BINARY_DIR}/rundir/$<CONFIG>/bin/64bit/$<TARGET_FILE_NAME:obs-studio>"
+             VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/rundir/$<CONFIG>/bin/64bit")

@@ -9,6 +9,7 @@
 
 #cmake
 /build*/
+!/build-aux/
 /release*/
 /debug*/
 .vs/
@@ -18,6 +19,7 @@
 .dirstamp
 /cmake/.CMakeBuildNumber
 .deps
+CMakeUserPresets.json
 
 #xcode
 *.xcodeproj/

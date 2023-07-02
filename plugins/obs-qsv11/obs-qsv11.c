@@ -228,7 +228,7 @@ static inline void add_strings(obs_property_t *list, const char *const *strings)
 #define TEXT_CONVERGENCE obs_module_text("Convergence")
 #define TEXT_ICQ_QUALITY obs_module_text("ICQQuality")
 #define TEXT_KEYINT_SEC obs_module_text("KeyframeIntervalSec")
-#define TEXT_BFRAMES obs_module_text("B Frames")
+#define TEXT_BFRAMES obs_module_text("BFrames")
 #define TEXT_PERCEPTUAL_ENHANCEMENTS \
 	obs_module_text("SubjectiveVideoEnhancements")
 
@@ -862,6 +862,14 @@ static void *obs_qsv_create(enum qsv_codec codec, obs_data_t *settings,
 		}
 		obsqsv->params.video_fmt_10bit = true;
 		break;
+	case VIDEO_FORMAT_P216:
+	case VIDEO_FORMAT_P416: {
+		const char *const text = obs_module_text("16bitUnsupported");
+		obs_encoder_set_last_error(encoder, text);
+		error("%s", text);
+		bfree(obsqsv);
+		return NULL;
+	}
 	default:
 		switch (voi->colorspace) {
 		case VIDEO_CS_2100_PQ:
@@ -992,10 +1000,13 @@ static void *obs_qsv_create_tex(enum qsv_codec codec, obs_data_t *settings,
 	}
 
 	if (obs_encoder_scaling_enabled(encoder)) {
-		blog(LOG_INFO,
-		     ">>> encoder scaling active, fall back to old qsv encoder");
-		return obs_encoder_create_rerouted(encoder,
-						   (const char *)fallback_id);
+		if (!obs_encoder_gpu_scaling_enabled(encoder)) {
+			blog(LOG_INFO,
+			     ">>> encoder CPU scaling active, fall back to old qsv encoder");
+			return obs_encoder_create_rerouted(
+				encoder, (const char *)fallback_id);
+		}
+		blog(LOG_INFO, ">>> encoder GPU scaling active");
 	}
 
 	blog(LOG_INFO, ">>> new qsv encoder");

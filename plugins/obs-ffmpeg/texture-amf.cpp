@@ -104,6 +104,7 @@ struct amf_base {
 	AMF_SURFACE_FORMAT amf_format;
 
 	amf_int64 max_throughput = 0;
+	amf_int64 requested_throughput = 0;
 	amf_int64 throughput = 0;
 	int64_t dts_offset = 0;
 	uint32_t cx;
@@ -440,6 +441,8 @@ static inline void refresh_throughput_caps(amf_base *enc, const char *&preset)
 	if (res == AMF_OK) {
 		caps->GetProperty(get_opt_name(CAP_MAX_THROUGHPUT),
 				  &enc->max_throughput);
+		caps->GetProperty(get_opt_name(CAP_REQUESTED_THROUGHPUT),
+				  &enc->requested_throughput);
 	}
 }
 
@@ -455,7 +458,8 @@ static inline void check_preset_compatibility(amf_base *enc,
 			preset = "quality";
 			set_opt(QUALITY_PRESET, get_preset(enc, preset));
 		} else {
-			if (enc->max_throughput < enc->throughput) {
+			if (enc->max_throughput - enc->requested_throughput <
+			    enc->throughput) {
 				preset = "quality";
 				refresh_throughput_caps(enc, preset);
 			}
@@ -467,7 +471,8 @@ static inline void check_preset_compatibility(amf_base *enc,
 			preset = "balanced";
 			set_opt(QUALITY_PRESET, get_preset(enc, preset));
 		} else {
-			if (enc->max_throughput < enc->throughput) {
+			if (enc->max_throughput - enc->requested_throughput <
+			    enc->throughput) {
 				preset = "balanced";
 				refresh_throughput_caps(enc, preset);
 			}
@@ -476,7 +481,8 @@ static inline void check_preset_compatibility(amf_base *enc,
 
 	if (astrcmpi(preset, "balanced") == 0) {
 		if (enc->max_throughput &&
-		    enc->max_throughput < enc->throughput) {
+		    enc->max_throughput - enc->requested_throughput <
+			    enc->throughput) {
 			preset = "speed";
 			refresh_throughput_caps(enc, preset);
 		}
@@ -1020,7 +1026,8 @@ static void check_texture_encode_capability(obs_encoder_t *encoder,
 	bool hevc = amf_codec_type::HEVC == codec;
 	bool av1 = amf_codec_type::AV1 == codec;
 
-	if (obs_encoder_scaling_enabled(encoder))
+	if (obs_encoder_scaling_enabled(encoder) &&
+	    !obs_encoder_gpu_scaling_enabled(encoder))
 		throw "Encoder scaling is active";
 
 	if (hevc || av1) {
@@ -1254,13 +1261,17 @@ try {
 	int64_t qp = obs_data_get_int(settings, "cqp");
 	const char *rc_str = obs_data_get_string(settings, "rate_control");
 	int rc = get_avc_rate_control(rc_str);
-	AMF_RESULT res;
+	AMF_RESULT res = AMF_OK;
 
 	amf_avc_update_data(enc, rc, bitrate * 1000, qp);
 
+	res = enc->amf_encoder->Flush();
+	if (res != AMF_OK)
+		throw amf_error("AMFComponent::Flush failed", res);
+
 	res = enc->amf_encoder->ReInit(enc->cx, enc->cy);
 	if (res != AMF_OK)
-		throw amf_error("AMFComponent::Init failed", res);
+		throw amf_error("AMFComponent::ReInit failed", res);
 
 	return true;
 
@@ -1364,6 +1375,8 @@ static void amf_avc_create_internal(amf_base *enc, obs_data_t *settings)
 				  &enc->bframes_supported);
 		caps->GetProperty(AMF_VIDEO_ENCODER_CAP_MAX_THROUGHPUT,
 				  &enc->max_throughput);
+		caps->GetProperty(AMF_VIDEO_ENCODER_CAP_REQUESTED_THROUGHPUT,
+				  &enc->requested_throughput);
 	}
 
 	const char *preset = obs_data_get_string(settings, "preset");
@@ -1447,6 +1460,13 @@ try {
 		obs_encoder_set_last_error(encoder, text);
 		throw text;
 	}
+	case VIDEO_FORMAT_P216:
+	case VIDEO_FORMAT_P416: {
+		const char *const text =
+			obs_module_text("AMF.16bitUnsupported");
+		obs_encoder_set_last_error(encoder, text);
+		throw text;
+	}
 	default:
 		switch (voi->colorspace) {
 		case VIDEO_CS_2100_PQ:
@@ -1481,8 +1501,7 @@ static void register_avc()
 	amf_encoder_info.get_name = amf_avc_get_name;
 	amf_encoder_info.create = amf_avc_create_texencode;
 	amf_encoder_info.destroy = amf_destroy;
-	/* FIXME: Figure out why encoder does not survive reconfiguration
-	amf_encoder_info.update = amf_avc_update; */
+	amf_encoder_info.update = amf_avc_update;
 	amf_encoder_info.encode_texture = amf_encode_tex;
 	amf_encoder_info.get_defaults = amf_defaults;
 	amf_encoder_info.get_properties = amf_avc_properties;
@@ -1574,13 +1593,17 @@ try {
 	int64_t qp = obs_data_get_int(settings, "cqp");
 	const char *rc_str = obs_data_get_string(settings, "rate_control");
 	int rc = get_hevc_rate_control(rc_str);
-	AMF_RESULT res;
+	AMF_RESULT res = AMF_OK;
 
 	amf_hevc_update_data(enc, rc, bitrate * 1000, qp);
 
+	res = enc->amf_encoder->Flush();
+	if (res != AMF_OK)
+		throw amf_error("AMFComponent::Flush failed", res);
+
 	res = enc->amf_encoder->ReInit(enc->cx, enc->cy);
 	if (res != AMF_OK)
-		throw amf_error("AMFComponent::Init failed", res);
+		throw amf_error("AMFComponent::ReInit failed", res);
 
 	return true;
 
@@ -1686,6 +1709,9 @@ static void amf_hevc_create_internal(amf_base *enc, obs_data_t *settings)
 	if (res == AMF_OK) {
 		caps->GetProperty(AMF_VIDEO_ENCODER_HEVC_CAP_MAX_THROUGHPUT,
 				  &enc->max_throughput);
+		caps->GetProperty(
+			AMF_VIDEO_ENCODER_HEVC_CAP_REQUESTED_THROUGHPUT,
+			&enc->requested_throughput);
 	}
 
 	const bool is10bit = enc->amf_format == AMF_SURFACE_P010;
@@ -1787,6 +1813,13 @@ try {
 	case VIDEO_FORMAT_I010:
 	case VIDEO_FORMAT_P010:
 		break;
+	case VIDEO_FORMAT_P216:
+	case VIDEO_FORMAT_P416: {
+		const char *const text =
+			obs_module_text("AMF.16bitUnsupported");
+		obs_encoder_set_last_error(encoder, text);
+		throw text;
+	}
 	default:
 		switch (voi->colorspace) {
 		case VIDEO_CS_2100_PQ:
@@ -1821,8 +1854,7 @@ static void register_hevc()
 	amf_encoder_info.get_name = amf_hevc_get_name;
 	amf_encoder_info.create = amf_hevc_create_texencode;
 	amf_encoder_info.destroy = amf_destroy;
-	/* FIXME: Figure out why encoder does not survive reconfiguration
-	amf_encoder_info.update = amf_hevc_update; */
+	amf_encoder_info.update = amf_hevc_update;
 	amf_encoder_info.encode_texture = amf_encode_tex;
 	amf_encoder_info.get_defaults = amf_defaults;
 	amf_encoder_info.get_properties = amf_hevc_properties;
@@ -1933,12 +1965,17 @@ try {
 	int64_t cq_level = obs_data_get_int(settings, "cqp");
 	const char *rc_str = obs_data_get_string(settings, "rate_control");
 	int rc = get_av1_rate_control(rc_str);
+	AMF_RESULT res = AMF_OK;
 
 	amf_av1_update_data(enc, rc, bitrate * 1000, cq_level);
 
-	AMF_RESULT res = enc->amf_encoder->ReInit(enc->cx, enc->cy);
+	res = enc->amf_encoder->Flush();
 	if (res != AMF_OK)
-		throw amf_error("AMFComponent::Init failed", res);
+		throw amf_error("AMFComponent::Flush failed", res);
+
+	res = enc->amf_encoder->ReInit(enc->cx, enc->cy);
+	if (res != AMF_OK)
+		throw amf_error("AMFComponent::ReInit failed", res);
 
 	return true;
 
@@ -2013,6 +2050,9 @@ static void amf_av1_create_internal(amf_base *enc, obs_data_t *settings)
 	if (res == AMF_OK) {
 		caps->GetProperty(AMF_VIDEO_ENCODER_AV1_CAP_MAX_THROUGHPUT,
 				  &enc->max_throughput);
+		caps->GetProperty(
+			AMF_VIDEO_ENCODER_AV1_CAP_REQUESTED_THROUGHPUT,
+			&enc->requested_throughput);
 	}
 
 	const bool is10bit = enc->amf_format == AMF_SURFACE_P010;
@@ -2089,6 +2129,13 @@ try {
 	case VIDEO_FORMAT_P010: {
 		break;
 	}
+	case VIDEO_FORMAT_P216:
+	case VIDEO_FORMAT_P416: {
+		const char *const text =
+			obs_module_text("AMF.16bitUnsupported");
+		obs_encoder_set_last_error(encoder, text);
+		throw text;
+	}
 	default:
 		switch (voi->colorspace) {
 		case VIDEO_CS_2100_PQ:
@@ -2132,8 +2179,7 @@ static void register_av1()
 	amf_encoder_info.get_name = amf_av1_get_name;
 	amf_encoder_info.create = amf_av1_create_texencode;
 	amf_encoder_info.destroy = amf_destroy;
-	/* FIXME: Figure out why encoder does not survive reconfiguration
-	amf_encoder_info.update = amf_av1_update; */
+	amf_encoder_info.update = amf_av1_update;
 	amf_encoder_info.encode_texture = amf_encode_tex;
 	amf_encoder_info.get_defaults = amf_av1_defaults;
 	amf_encoder_info.get_properties = amf_av1_properties;

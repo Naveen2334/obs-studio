@@ -1,5 +1,5 @@
 /******************************************************************************
-    Copyright (C) 2013-2014 by Hugh Bailey <obs.jim@gmail.com>
+    Copyright (C) 2023 by Lain Bailey <lain@obsproject.com>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -748,7 +748,10 @@ static int obs_init_video(struct obs_video_info *ovi)
 
 	int errorcode;
 #ifdef __APPLE__
-	errorcode = pthread_create(&video->video_thread, NULL,
+	pthread_attr_t attr;
+	pthread_attr_init(&attr);
+	pthread_attr_set_qos_class_np(&attr, QOS_CLASS_USER_INTERACTIVE, 0);
+	errorcode = pthread_create(&video->video_thread, &attr,
 				   obs_graphics_thread_autorelease, obs);
 #else
 	errorcode = pthread_create(&video->video_thread, NULL,
@@ -1083,6 +1086,7 @@ static void obs_free_data(void)
 	for (size_t i = 0; i < data->protocols.num; i++)
 		bfree(data->protocols.array[i]);
 	da_free(data->protocols);
+	da_free(data->sources_to_tick);
 }
 
 static const char *obs_signals[] = {

@@ -1,6 +1,6 @@
 /******************************************************************************
-    Copyright (C) 2013-2014 by Hugh Bailey <obs.jim@gmail.com>
-                               Philippe Groarke <philippe.groarke@gmail.com>
+    Copyright (C) 2023 by Lain Bailey <lain@obsproject.com>
+                          Philippe Groarke <philippe.groarke@gmail.com>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -3853,14 +3853,8 @@ void OBSBasicSettings::SaveOutputSettings()
 	SaveCheckBox(ui->simpleReplayBuf, "SimpleOutput", "RecRB");
 	SaveSpinBox(ui->simpleRBSecMax, "SimpleOutput", "RecRBTime");
 	SaveSpinBox(ui->simpleRBMegsMax, "SimpleOutput", "RecRBSize");
-	config_set_int(
-		main->Config(), "SimpleOutput", "RecTracks",
-		(ui->simpleOutRecTrack1->isChecked() ? (1 << 0) : 0) |
-			(ui->simpleOutRecTrack2->isChecked() ? (1 << 1) : 0) |
-			(ui->simpleOutRecTrack3->isChecked() ? (1 << 2) : 0) |
-			(ui->simpleOutRecTrack4->isChecked() ? (1 << 3) : 0) |
-			(ui->simpleOutRecTrack5->isChecked() ? (1 << 4) : 0) |
-			(ui->simpleOutRecTrack6->isChecked() ? (1 << 5) : 0));
+	config_set_int(main->Config(), "SimpleOutput", "RecTracks",
+		       SimpleOutGetSelectedAudioTracks());
 
 	curAdvStreamEncoder = GetComboData(ui->advOutEncoder);
 
@@ -3892,14 +3886,8 @@ void OBSBasicSettings::SaveOutputSettings()
 	SaveSpinBox(ui->advOutSplitFileTime, "AdvOut", "RecSplitFileTime");
 	SaveSpinBox(ui->advOutSplitFileSize, "AdvOut", "RecSplitFileSize");
 
-	config_set_int(
-		main->Config(), "AdvOut", "RecTracks",
-		(ui->advOutRecTrack1->isChecked() ? (1 << 0) : 0) |
-			(ui->advOutRecTrack2->isChecked() ? (1 << 1) : 0) |
-			(ui->advOutRecTrack3->isChecked() ? (1 << 2) : 0) |
-			(ui->advOutRecTrack4->isChecked() ? (1 << 3) : 0) |
-			(ui->advOutRecTrack5->isChecked() ? (1 << 4) : 0) |
-			(ui->advOutRecTrack6->isChecked() ? (1 << 5) : 0));
+	config_set_int(main->Config(), "AdvOut", "RecTracks",
+		       AdvOutGetSelectedAudioTracks());
 
 	config_set_int(main->Config(), "AdvOut", "FLVTrack", CurrentFLVTrack());
 
@@ -4219,6 +4207,7 @@ bool OBSBasicSettings::QueryAllowedToClose()
 
 	bool invalidEncoder = false;
 	bool invalidFormat = false;
+	bool invalidTracks = false;
 	if (simple) {
 		if (ui->simpleOutRecEncoder->currentIndex() == -1 ||
 		    ui->simpleOutStrEncoder->currentIndex() == -1 ||
@@ -4228,12 +4217,24 @@ bool OBSBasicSettings::QueryAllowedToClose()
 
 		if (ui->simpleOutRecFormat->currentIndex() == -1)
 			invalidFormat = true;
+
+		QString qual =
+			ui->simpleOutRecQuality->currentData().toString();
+		QString format =
+			ui->simpleOutRecFormat->currentData().toString();
+		if (SimpleOutGetSelectedAudioTracks() == 0 &&
+		    qual != "Stream" && format != "flv")
+			invalidTracks = true;
 	} else {
 		if (ui->advOutRecEncoder->currentIndex() == -1 ||
 		    ui->advOutEncoder->currentIndex() == -1 ||
 		    ui->advOutRecAEncoder->currentIndex() == -1 ||
 		    ui->advOutAEncoder->currentIndex() == -1)
 			invalidEncoder = true;
+
+		QString format = ui->advOutRecFormat->currentData().toString();
+		if (AdvOutGetSelectedAudioTracks() == 0 && format != "flv")
+			invalidTracks = true;
 	}
 
 	if (invalidEncoder) {
@@ -4245,6 +4246,12 @@ bool OBSBasicSettings::QueryAllowedToClose()
 		OBSMessageBox::warning(
 			this, QTStr("CodecCompat.ContainerMissingOnExit.Title"),
 			QTStr("CodecCompat.ContainerMissingOnExit.Text"));
+		return false;
+	} else if (invalidTracks) {
+		OBSMessageBox::warning(
+			this,
+			QTStr("OutputWarnings.NoTracksSelectedOnExit.Title"),
+			QTStr("OutputWarnings.NoTracksSelectedOnExit.Text"));
 		return false;
 	}
 
@@ -4636,17 +4643,15 @@ void OBSBasicSettings::AudioChangedRestart()
 		if (currentChannelIndex != channelIndex ||
 		    currentSampleRateIndex != sampleRateIndex ||
 		    currentLLAudioBufVal != llBufferingEnabled) {
-			audioChanged = true;
 			ui->audioMsg->setText(
 				QTStr("Basic.Settings.ProgramRestart"));
-			sender()->setProperty("changed", QVariant(true));
-			EnableApplyButton(true);
 		} else {
-			audioChanged = false;
 			ui->audioMsg->setText("");
-			sender()->setProperty("changed", QVariant(false));
-			EnableApplyButton(false);
 		}
+
+		audioChanged = true;
+		sender()->setProperty("changed", QVariant(true));
+		EnableApplyButton(true);
 	}
 }
 
@@ -4980,8 +4985,8 @@ void OBSBasicSettings::AdvOutSplitFileChanged()
 }
 
 static const unordered_set<string> builtin_codecs = {
-	"h264", "hevc", "av1",       "prores",    "aac",
-	"opus", "alac", "pcm_s16le", "pcm_s24le", "pcm_f32le"};
+	"h264", "hevc", "av1",       "prores",    "aac",      "opus",
+	"alac", "flac", "pcm_s16le", "pcm_s24le", "pcm_f32le"};
 
 static const unordered_map<string, unordered_set<string>> codec_compat = {
 	// Technically our muxer supports HEVC and AV1 as well, but nothing else does
@@ -4989,15 +4994,18 @@ static const unordered_map<string, unordered_set<string>> codec_compat = {
 	{"mpegts", {"h264", "hevc", "aac", "opus"}},
 	{"hls",
 	 {"h264", "hevc", "aac"}}, // Also using MPEG-TS, but no Opus support
+	{"mp4",
+	 {"h264", "hevc", "av1", "aac", "opus", "alac", "flac", "pcm_s16le",
+	  "pcm_s24le", "pcm_f32le"}},
+	{"fragmented_mp4",
+	 {"h264", "hevc", "av1", "aac", "opus", "alac", "flac", "pcm_s16le",
+	  "pcm_s24le", "pcm_f32le"}},
 	{"mov",
 	 {"h264", "hevc", "prores", "aac", "alac", "pcm_s16le", "pcm_s24le",
 	  "pcm_f32le"}},
-	{"mp4", {"h264", "hevc", "av1", "aac", "opus", "alac", "flac"}},
 	{"fragmented_mov",
 	 {"h264", "hevc", "prores", "aac", "alac", "pcm_s16le", "pcm_s24le",
 	  "pcm_f32le"}},
-	{"fragmented_mp4",
-	 {"h264", "hevc", "av1", "aac", "opus", "alac", "flac"}},
 	// MKV supports everything
 	{"mkv", {}},
 };
@@ -5012,6 +5020,12 @@ static bool ContainerSupportsCodec(const string &container, const string &codec)
 	// Assume everything is supported
 	if (codecs.empty())
 		return true;
+
+	// PCM in MP4 is only supported in FFmpeg > 6.0
+	if ((container == "mp4" || container == "fragmented_mp4") &&
+	    !ff_supports_pcm_in_mp4() && codec.find("pcm_") != string::npos)
+		return false;
+
 	return codecs.count(codec) > 0;
 }
 
@@ -5902,14 +5916,12 @@ void OBSBasicSettings::SimpleRecordingEncoderChanged()
 
 	if (qual == "Stream") {
 		ui->simpleRecTrackWidget->setCurrentWidget(ui->simpleFlvTracks);
-		ui->simpleFlvTracks->setEnabled(false);
 	} else if (qual == "Lossless") {
 		ui->simpleRecTrackWidget->setCurrentWidget(ui->simpleRecTracks);
 	} else {
 		if (format == "flv") {
 			ui->simpleRecTrackWidget->setCurrentWidget(
 				ui->simpleFlvTracks);
-			ui->simpleFlvTracks->setEnabled(false);
 		} else {
 			ui->simpleRecTrackWidget->setCurrentWidget(
 				ui->simpleRecTracks);
@@ -6157,6 +6169,28 @@ int OBSBasicSettings::CurrentFLVTrack()
 		return 6;
 
 	return 0;
+}
+
+int OBSBasicSettings::SimpleOutGetSelectedAudioTracks()
+{
+	int tracks = (ui->simpleOutRecTrack1->isChecked() ? (1 << 0) : 0) |
+		     (ui->simpleOutRecTrack2->isChecked() ? (1 << 1) : 0) |
+		     (ui->simpleOutRecTrack3->isChecked() ? (1 << 2) : 0) |
+		     (ui->simpleOutRecTrack4->isChecked() ? (1 << 3) : 0) |
+		     (ui->simpleOutRecTrack5->isChecked() ? (1 << 4) : 0) |
+		     (ui->simpleOutRecTrack6->isChecked() ? (1 << 5) : 0);
+	return tracks;
+}
+
+int OBSBasicSettings::AdvOutGetSelectedAudioTracks()
+{
+	int tracks = (ui->advOutRecTrack1->isChecked() ? (1 << 0) : 0) |
+		     (ui->advOutRecTrack2->isChecked() ? (1 << 1) : 0) |
+		     (ui->advOutRecTrack3->isChecked() ? (1 << 2) : 0) |
+		     (ui->advOutRecTrack4->isChecked() ? (1 << 3) : 0) |
+		     (ui->advOutRecTrack5->isChecked() ? (1 << 4) : 0) |
+		     (ui->advOutRecTrack6->isChecked() ? (1 << 5) : 0);
+	return tracks;
 }
 
 /* Using setEditable(true) on a QComboBox when there's a custom style in use

@@ -51,7 +51,9 @@ General Functions
                  - OBS_PROPERTIES_DEFER_UPDATE - A hint that tells the
                    front-end to defers updating the settings until the
                    user has finished editing all properties rather than
-                   immediately updating any settings
+                   immediately updating any settings. Currently only
+                   works for properties of input and transition sources,
+                   this flag is a no-op for other properties at this time.
 
 ---------------------
 
@@ -194,7 +196,8 @@ Property Object Functions
 
                           - **OBS_COMBO_TYPE_EDITABLE** - Can be edited.
                             Only used with string lists.
-                          - **OBS_COMBO_TYPE_LIST** - Not editable.
+                          - **OBS_COMBO_TYPE_LIST** - Not editable. Displayed as combo box.
+                          - **OBS_COMBO_TYPE_RADIO** - Not editable. Displayed as radio buttons.
 
    :param    format:      Can be one of the following values:
 
@@ -202,6 +205,7 @@ Property Object Functions
                           - **OBS_COMBO_FORMAT_FLOAT** - Floating point
                             list
                           - **OBS_COMBO_FORMAT_STRING** - String list
+                          - **OBS_COMBO_FORMAT_BOOL** - Boolean list
 
    :return:               The property
 

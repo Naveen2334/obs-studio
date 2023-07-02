@@ -36,6 +36,8 @@
 #include <spa/param/video/type-info.h>
 #include <spa/utils/result.h>
 
+//#define DEBUG_PIPEWIRE
+
 #if !PW_CHECK_VERSION(0, 3, 62)
 enum spa_meta_videotransform_value {
 	SPA_META_TRANSFORMATION_None = 0, /**< no transform */
@@ -289,6 +291,24 @@ static const struct {
 		true,
 		"XBGR8888",
 	},
+#if PW_CHECK_VERSION(0, 3, 41)
+	{
+		SPA_VIDEO_FORMAT_ABGR_210LE,
+		DRM_FORMAT_ABGR2101010,
+		GS_R10G10B10A2,
+		false,
+		"ABGR2101010",
+
+	},
+	{
+		SPA_VIDEO_FORMAT_xBGR_210LE,
+		DRM_FORMAT_XBGR2101010,
+		GS_R10G10B10A2,
+		false,
+		"XBGR2101010",
+
+	},
+#endif
 };
 
 #define N_SUPPORTED_FORMATS \
@@ -524,7 +544,7 @@ static void renegotiate_format(void *data, uint64_t expirations)
 
 	pw_thread_loop_lock(obs_pw->thread_loop);
 
-	uint8_t params_buffer[2048];
+	uint8_t params_buffer[4096];
 	struct spa_pod_builder pod_builder =
 		SPA_POD_BUILDER_INIT(params_buffer, sizeof(params_buffer));
 	uint32_t n_params;
@@ -598,12 +618,14 @@ static void on_process_cb(void *user_data)
 		bool use_modifiers;
 		bool corrupt = false;
 
+#ifdef DEBUG_PIPEWIRE
 		blog(LOG_DEBUG,
 		     "[pipewire] DMA-BUF info: fd:%ld, stride:%d, offset:%u, size:%dx%d",
 		     buffer->datas[0].fd, buffer->datas[0].chunk->stride,
 		     buffer->datas[0].chunk->offset,
 		     obs_pw->format.info.raw.size.width,
 		     obs_pw->format.info.raw.size.height);
+#endif
 
 		if (!lookup_format_info_from_spa_format(
 			    obs_pw->format.info.raw.format, &drm_format, NULL,
@@ -646,6 +668,7 @@ static void on_process_cb(void *user_data)
 			pw_loop_signal_event(
 				pw_thread_loop_get_loop(obs_pw->thread_loop),
 				obs_pw->reneg);
+			goto read_metadata;
 		}
 	} else {
 		blog(LOG_DEBUG, "[pipewire] Buffer has memory texture");
@@ -687,10 +710,12 @@ static void on_process_cb(void *user_data)
 	region = spa_buffer_find_meta_data(buffer, SPA_META_VideoCrop,
 					   sizeof(*region));
 	if (region && spa_meta_region_is_valid(region)) {
+#ifdef DEBUG_PIPEWIRE
 		blog(LOG_DEBUG,
 		     "[pipewire] Crop Region available (%dx%d+%d+%d)",
 		     region->region.position.x, region->region.position.y,
 		     region->region.size.width, region->region.size.height);
+#endif
 
 		obs_pw->crop.x = region->region.position.x;
 		obs_pw->crop.y = region->region.position.y;
@@ -974,7 +999,7 @@ void obs_pipewire_connect_stream(obs_pipewire *obs_pw, int pipewire_node,
 	struct spa_pod_builder pod_builder;
 	const struct spa_pod **params = NULL;
 	uint32_t n_params;
-	uint8_t params_buffer[2048];
+	uint8_t params_buffer[4096];
 
 	pw_thread_loop_lock(obs_pw->thread_loop);
 
